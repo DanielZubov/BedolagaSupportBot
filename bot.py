@@ -20,33 +20,27 @@ from telegram.constants import ParseMode
 import pytz
 from dotenv import load_dotenv
 
-# Загрузка переменных окружения
 load_dotenv()
 
-# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
 BOT_TOKEN = os.getenv('SUPPORT_BOT_TOKEN')
 ADMIN_IDS = [int(id.strip()) for id in os.getenv('ADMIN_IDS', '').split(',') if id.strip()]
 POSTGRES_DSN = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/1')
 
-# Состояния
 class SupportStates:
     WAITING_FOR_MESSAGE = 'waiting_message'
     WAITING_FOR_REPLY = 'waiting_reply'
 
-# Глобальные объекты
 db_pool = None
 redis_client = None
 
 async def init_db():
-    """Инициализация подключения к БД"""
     global db_pool
     db_pool = await asyncpg.create_pool(
         POSTGRES_DSN,
@@ -57,16 +51,13 @@ async def init_db():
     return db_pool
 
 async def init_redis():
-    """Инициализация подключения к Redis"""
     global redis_client
     redis_client = await redis.from_url(REDIS_URL, decode_responses=True)
     return redis_client
 
 async def get_user_data(telegram_id: int) -> Optional[Dict]:
-    """Получение данных пользователя из БД Bedolaga"""
     try:
         async with db_pool.acquire() as conn:
-            # Получаем пользователя
             user = await conn.fetchrow(
                 """
                 SELECT 
@@ -87,37 +78,40 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
             if not user:
                 return None
                 
-            # Получаем активную подписку
             subscription = await conn.fetchrow(
                 """
                 SELECT 
                     id,
                     status,
+                    is_trial,
                     traffic_limit_gb,
                     traffic_used_gb,
                     device_limit,
                     end_date,
-                    created_at
+                    created_at,
+                    tariff_id
                 FROM subscriptions 
-                WHERE user_id = $1 AND status = 'active'
+                WHERE user_id = $1 AND status IN ('active', 'trial')
                 ORDER BY created_at DESC 
                 LIMIT 1
                 """,
                 user['id']
             )
             
-            # Формируем данные
             data = dict(user)
             if subscription:
                 data['subscription'] = dict(subscription)
-                # Вычисляем процент использованного трафика
-                if subscription['traffic_limit_gb'] and subscription['traffic_limit_gb'] > 0:
-                    used_percent = (subscription['traffic_used_gb'] / subscription['traffic_limit_gb']) * 100
+                data['subscription']['expires_at'] = subscription['end_date']
+                
+                traffic_limit = subscription['traffic_limit_gb'] or 0
+                traffic_used = subscription['traffic_used_gb'] or 0
+                
+                if traffic_limit > 0:
+                    used_percent = (traffic_used / traffic_limit) * 100
                     data['subscription']['used_percent'] = round(used_percent, 1)
                 else:
                     data['subscription']['used_percent'] = 0
                     
-                # Дни до истечения
                 if subscription['end_date']:
                     days_left = (subscription['end_date'] - datetime.now(pytz.UTC)).days
                     data['subscription']['days_left'] = days_left
@@ -130,7 +124,6 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
         return None
 
 async def format_user_info(user_data: Dict) -> str:
-    """Форматирование информации о пользователе"""
     lines = [
         "📋 **ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ**",
         f"🆔 ID: `{user_data.get('telegram_id')}`",
@@ -143,7 +136,10 @@ async def format_user_info(user_data: Dict) -> str:
     
     sub = user_data.get('subscription')
     if sub:
-        lines.append(f"📊 Статус: {'✅ Активна' if sub.get('status') == 'active' else '❌ Неактивна'}")
+        status_text = '✅ Активна' if sub.get('status') == 'active' else '🔄 Триал'
+        if sub.get('is_trial'):
+            status_text = '🎯 Триал'
+        lines.append(f"📊 Статус: {status_text}")
         lines.append(f"📶 Трафик: {sub.get('traffic_used_gb', 0):.1f} / {sub.get('traffic_limit_gb', 0):.1f} ГБ ({sub.get('used_percent', 0):.1f}%)")
         lines.append(f"📱 Устройств: {sub.get('device_limit', 0)}")
         if sub.get('end_date'):
@@ -156,21 +152,31 @@ async def format_user_info(user_data: Dict) -> str:
     return "\n".join(lines)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
     user = update.effective_user
     if not user:
         return
         
-    # Проверяем админа
+    # Админское меню
     if user.id in ADMIN_IDS:
+        keyboard = [
+            [InlineKeyboardButton("📋 Все открытые тикеты", callback_data='admin_tickets')],
+            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
-            f"👋 Привет, Админ!\n\n"
-            "Это бот технической поддержки.\n"
-            "Все обращения пользователей будут приходить сюда.\n"
+            f"👋 **Панель администратора**\n\n"
+            "📌 **Управление тикетами:**\n"
+            "• Все обращения приходят автоматически\n"
+            "• Используйте кнопки под сообщениями\n"
+            "• Ответы отправляются анонимно\n\n"
+            "Выберите действие:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
         )
         return
     
-    # Проверяем, есть ли пользователь в БД
+    # Пользовательское меню
     user_data = await get_user_data(user.id)
     
     if not user_data:
@@ -180,7 +186,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Сохраняем данные пользователя в контексте
     context.user_data['user_data'] = user_data
     
     keyboard = [
@@ -198,21 +203,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий кнопок"""
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
+    data = query.data
     
-    if query.data == 'new_ticket':
+    # Админские кнопки
+    if data == 'admin_tickets':
+        await show_admin_tickets(update, context)
+        return
+    elif data == 'admin_stats':
+        await show_admin_stats(update, context)
+        return
+    
+    # Пользовательские кнопки
+    if data == 'new_ticket':
         context.user_data['state'] = SupportStates.WAITING_FOR_MESSAGE
         await query.message.reply_text(
             "📝 Пожалуйста, опишите вашу проблему подробно.\n"
             "Вы можете отправить текст, фото, видео или документ.\n\n"
             "❗ Для отмены отправьте /cancel"
         )
-    elif query.data == 'my_tickets':
-        # Получаем данные пользователя
+    elif data == 'my_tickets':
         user_data = await get_user_data(user_id)
         if not user_data:
             await query.message.reply_text("❌ Пользователь не найден")
@@ -241,13 +254,74 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
+async def show_admin_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать все открытые тикеты"""
+    query = update.callback_query
+    
+    async with db_pool.acquire() as conn:
+        tickets = await conn.fetch(
+            """
+            SELECT 
+                t.id,
+                t.title,
+                t.status,
+                t.created_at,
+                u.first_name,
+                u.username,
+                u.telegram_id
+            FROM support_tickets t
+            JOIN users u ON t.user_id = u.id
+            WHERE t.status = 'open'
+            ORDER BY t.created_at DESC
+            LIMIT 20
+            """
+        )
+    
+    if not tickets:
+        await query.message.reply_text("📭 Нет открытых тикетов.")
+        return
+    
+    text = "📋 **Открытые тикеты:**\n\n"
+    for ticket in tickets:
+        text += f"#{ticket['id']} - {ticket['title']}\n"
+        text += f"👤 {ticket['first_name']} (@{ticket['username'] or 'нет'})\n"
+        text += f"📅 {ticket['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+    
+    await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать статистику"""
+    query = update.callback_query
+    
+    async with db_pool.acquire() as conn:
+        # Всего тикетов
+        total = await conn.fetchval("SELECT COUNT(*) FROM support_tickets")
+        
+        # Открытых
+        open_tickets = await conn.fetchval("SELECT COUNT(*) FROM support_tickets WHERE status = 'open'")
+        
+        # Закрытых за сегодня
+        today = datetime.now(pytz.UTC).date()
+        closed_today = await conn.fetchval(
+            "SELECT COUNT(*) FROM support_tickets WHERE status = 'closed' AND DATE(closed_at) = $1",
+            today
+        )
+    
+    text = (
+        "📊 **Статистика поддержки**\n\n"
+        f"📌 Всего обращений: {total}\n"
+        f"🔄 Открытых: {open_tickets}\n"
+        f"✅ Закрыто сегодня: {closed_today}\n"
+        f"📅 Дата: {today.strftime('%d.%m.%Y')}"
+    )
+    
+    await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений от пользователей"""
     user = update.effective_user
     if not user:
         return
     
-    # Если это админ, не обрабатываем как пользователя
     if user.id in ADMIN_IDS:
         await update.message.reply_text(
             "ℹ️ Вы администратор. Используйте кнопки под сообщениями пользователей для ответа."
@@ -265,25 +339,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создание нового тикета"""
     user = update.effective_user
     message = update.message
     
     if not user:
         return
     
-    # Получаем данные пользователя из БД
     user_data = await get_user_data(user.id)
     if not user_data:
         await message.reply_text("❌ Ошибка: пользователь не найден.")
         return
     
-    # Сохраняем в Redis
+    # Получаем текст сообщения
+    message_text = message.text or message.caption or "Вложение"
+    
     ticket_id = f"ticket_{user.id}_{datetime.now().timestamp()}"
     
     message_data = {
         'user_id': user.id,
-        'text': message.text or 'Сообщение с вложением',
+        'text': message_text,
         'timestamp': datetime.now().isoformat(),
         'has_media': bool(message.photo or message.video or message.document)
     }
@@ -294,10 +368,8 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         json.dumps(message_data)
     )
     
-    # Формируем информацию для админов
     user_info = await format_user_info(user_data)
     
-    # Отправка админам
     for admin_id in ADMIN_IDS:
         try:
             keyboard = [
@@ -311,7 +383,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_text = (
                 f"🔔 **НОВОЕ ОБРАЩЕНИЕ**\n\n"
                 f"{user_info}\n\n"
-                f"**Сообщение:**\n{message.text or '📎 Вложение'}"
+                f"**Сообщение:**\n{message_text}"
             )
             
             await context.bot.send_message(
@@ -321,24 +393,24 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             
-            # Если есть медиа, пересылаем
+            # Пересылаем медиа с текстом
             if message.photo:
                 await context.bot.send_photo(
                     chat_id=admin_id,
                     photo=message.photo[-1].file_id,
-                    caption=f"Вложение к обращению"
+                    caption=f"📎 Вложение к обращению\n\n{message.caption or ''}"
                 )
             elif message.video:
                 await context.bot.send_video(
                     chat_id=admin_id,
                     video=message.video.file_id,
-                    caption=f"Вложение к обращению"
+                    caption=f"📎 Вложение к обращению\n\n{message.caption or ''}"
                 )
             elif message.document:
                 await context.bot.send_document(
                     chat_id=admin_id,
                     document=message.document.file_id,
-                    caption=f"Вложение к обращению"
+                    caption=f"📎 Вложение к обращению\n\n{message.caption or ''}"
                 )
                 
         except Exception as e:
@@ -354,8 +426,8 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ) VALUES ($1, $2, $3, 'open', NOW())
                 """,
                 user_data['id'],
-                (message.text[:50] + '...') if message.text and len(message.text) > 50 else (message.text or 'Вложение'),
-                message.text or 'Вложение'
+                message_text[:50] + ('...' if len(message_text) > 50 else ''),
+                message_text
             )
     except Exception as e:
         logger.error(f"Error saving ticket: {e}")
@@ -368,14 +440,18 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ответов админов"""
     query = update.callback_query
-    await query.answer()
+    
+    try:
+        await query.answer()
+    except:
+        pass
     
     data = query.data
     parts = data.split('_')
     
     if len(parts) < 3:
+        await query.message.reply_text("❌ Ошибка: неверный формат данных")
         return
     
     action = parts[0]
@@ -394,6 +470,21 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     elif action == 'close':
         await redis_client.delete(f"pending_ticket:{ticket_id}")
+        
+        # Обновляем статус в БД
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE support_tickets 
+                    SET status = 'closed', closed_at = NOW() 
+                    WHERE id = $1
+                    """,
+                    int(ticket_id.split('_')[-1]) if ticket_id.startswith('ticket_') else 0
+                )
+        except Exception as e:
+            logger.error(f"Error closing ticket: {e}")
+        
         await query.message.reply_text("✅ Тикет закрыт.")
         
         try:
@@ -405,7 +496,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.error(f"Error notifying user: {e}")
 
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений от админов"""
     user = update.effective_user
     if not user or user.id not in ADMIN_IDS:
         return
@@ -421,6 +511,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     
     try:
+        # Отправляем ответ пользователю
         await context.bot.send_message(
             chat_id=reply_to_user,
             text=f"📩 **Ответ поддержки:**\n\n{update.message.text}",
@@ -429,6 +520,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await update.message.reply_text("✅ Ответ отправлен пользователю.")
         
+        # Очищаем состояние
         context.user_data['state'] = None
         context.user_data['reply_to_user'] = None
         context.user_data['reply_ticket'] = None
@@ -438,7 +530,6 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Ошибка при отправке: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена текущего действия"""
     context.user_data['state'] = None
     context.user_data['reply_to_user'] = None
     context.user_data['reply_ticket'] = None
@@ -449,11 +540,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ошибок"""
     logger.error(f"Update {update} caused error {context.error}")
 
 async def create_tables():
-    """Создание необходимых таблиц"""
     async with db_pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS support_tickets (
@@ -468,7 +557,6 @@ async def create_tables():
             )
         """)
         
-        # Создаем индексы для производительности
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON support_tickets(user_id)
         """)
@@ -480,7 +568,6 @@ async def create_tables():
         logger.info("Tables created/verified")
 
 def main():
-    """Основная функция"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -490,12 +577,12 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     
-    # Обработчики для пользователей
+    # Обработчики
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_message))
     
-    # Обработчики для админов
+    # Обработчики админов
     application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^reply_'))
     application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^close_'))
     application.add_handler(MessageHandler(
