@@ -96,7 +96,7 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                     traffic_limit_gb,
                     traffic_used_gb,
                     device_limit,
-                    expires_at,
+                    end_date,
                     created_at
                 FROM subscriptions 
                 WHERE user_id = $1 AND status = 'active'
@@ -118,8 +118,8 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                     data['subscription']['used_percent'] = 0
                     
                 # Дни до истечения
-                if subscription['expires_at']:
-                    days_left = (subscription['expires_at'] - datetime.now(pytz.UTC)).days
+                if subscription['end_date']:
+                    days_left = (subscription['end_date'] - datetime.now(pytz.UTC)).days
                     data['subscription']['days_left'] = days_left
             else:
                 data['subscription'] = None
@@ -146,10 +146,10 @@ async def format_user_info(user_data: Dict) -> str:
         lines.append(f"📊 Статус: {'✅ Активна' if sub.get('status') == 'active' else '❌ Неактивна'}")
         lines.append(f"📶 Трафик: {sub.get('traffic_used_gb', 0):.1f} / {sub.get('traffic_limit_gb', 0):.1f} ГБ ({sub.get('used_percent', 0):.1f}%)")
         lines.append(f"📱 Устройств: {sub.get('device_limit', 0)}")
-        if sub.get('expires_at'):
+        if sub.get('end_date'):
             days = sub.get('days_left', 0)
             emoji = '🟢' if days > 7 else ('🟡' if days > 3 else '🔴')
-            lines.append(f"⏳ Истекает: {sub.get('expires_at').strftime('%d.%m.%Y %H:%M')} {emoji} ({days} дн.)")
+            lines.append(f"⏳ Истекает: {sub.get('end_date').strftime('%d.%m.%Y %H:%M')} {emoji} ({days} дн.)")
     else:
         lines.append("❌ Нет активной подписки")
     
