@@ -23,4 +23,4 @@ services:
 networks:
   bot_network:
     external: true
-    name: remnawave_bot_bot_network  # Используем сеть от Bedolaga
+    name: remnawave-bedolaga-telegram-bot_bot_network  # Используем сеть от Bedolaga
