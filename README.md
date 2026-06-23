@@ -86,13 +86,13 @@ LOG_LEVEL=INFO
 ### 3. Запуск бота
 ```bash
 # Сборка и запуск контейнера
-docker compose -f docker-compose.yml up -d --build
+docker compose up -d --build
 
 # Проверка статуса
-docker compose -f docker-compose.yml ps
+docker compose ps
 
 # Просмотр логов в реальном времени
-docker compose -f docker-compose.yml logs -f support-bot
+docker compose logs -f support-bot
 ```
 ### 4. Проверка работы
 1. Отправьте команду /start вашему боту поддержки в Telegram
@@ -104,11 +104,11 @@ docker compose -f docker-compose.yml logs -f support-bot
 ## 🔧 Управление ботом
 | Команда | Описание |
 |---------|----------|
-| ```docker compose -f docker-compose.yml up -d``` | Запуск бота в фоновом режиме |
-| ```docker compose -f docker-compose.yml down``` | Остановка и удаление контейнера |
-| ```docker compose -f docker-compose.yml restart``` | Перезапуск бота |
-| ```docker compose -f docker-compose.yml logs -f support-bot``` | Просмотр логов в реальном времени |
-| ```docker compose -f docker-compose.yml ps``` | Проверка статуса контейнера |
+| ```docker compose up -d``` | Запуск бота в фоновом режиме |
+| ```docker compose down``` | Остановка и удаление контейнера |
+| ```docker compose restart``` | Перезапуск бота |
+| ```docker compose logs -f support-bot``` | Просмотр логов в реальном времени |
+| ```docker compose ps``` | Проверка статуса контейнера |
 
 ## 🔄Обновление бота
 ```bash
@@ -116,8 +116,8 @@ docker compose -f docker-compose.yml logs -f support-bot
 git pull
 
 # Пересборка и запуск
-docker compose -f docker-compose.yml down
-docker compose -f docker-compose.yml up -d --build
+docker compose down
+docker compose up -d --build
 
 # Очистка старых образов (опционально)
 docker system prune -f
