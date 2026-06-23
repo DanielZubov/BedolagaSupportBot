@@ -3,11 +3,12 @@ import asyncio
 import logging
 import os
 import json
+import datetime
 from datetime import datetime
 from typing import Dict, Optional
 import asyncpg
 import redis.asyncio as redis
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -61,14 +62,8 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
             user = await conn.fetchrow(
                 """
                 SELECT 
-                    id,
-                    telegram_id,
-                    username,
-                    first_name,
-                    last_name,
-                    balance_kopeks as balance,
-                    created_at,
-                    language
+                    id, telegram_id, username, first_name, last_name, 
+                    balance_kopeks as balance, created_at, language
                 FROM users 
                 WHERE telegram_id = $1
                 """,
@@ -81,15 +76,8 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
             subscription = await conn.fetchrow(
                 """
                 SELECT 
-                    id,
-                    status,
-                    is_trial,
-                    traffic_limit_gb,
-                    traffic_used_gb,
-                    device_limit,
-                    end_date,
-                    created_at,
-                    tariff_id
+                    id, status, is_trial, traffic_limit_gb, traffic_used_gb, 
+                    device_limit, end_date, created_at, tariff_id
                 FROM subscriptions 
                 WHERE user_id = $1 AND status IN ('active', 'trial')
                 ORDER BY created_at DESC 
@@ -147,9 +135,23 @@ async def format_user_info(user_data: Dict) -> str:
             emoji = '🟢' if days > 7 else ('🟡' if days > 3 else '🔴')
             lines.append(f"⏳ Истекает: {sub.get('end_date').strftime('%d.%m.%Y %H:%M')} {emoji} ({days} дн.)")
     else:
-        lines.append("❌ Нет активной подписки")
+        lines.append("❌ Нет active подписки")
     
     return "\n".join(lines)
+
+# --- Клавиатуры управления ---
+def get_user_keyboard():
+    keyboard = [
+        [KeyboardButton("📝 Создать обращение"), KeyboardButton("📊 Мои обращения")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+
+def get_admin_keyboard():
+    keyboard = [
+        [KeyboardButton("📋 Открытые тикеты"), KeyboardButton("📈 Статистика")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -158,27 +160,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     # Админское меню
     if user.id in ADMIN_IDS:
-        keyboard = [
-            [InlineKeyboardButton("📋 Все открытые тикеты", callback_data='admin_tickets')],
-            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await update.message.reply_text(
             f"👋 **Панель администратора**\n\n"
-            "📌 **Управление тикетами:**\n"
-            "• Все обращения приходят автоматически\n"
-            "• Используйте кнопки под сообщениями\n"
-            "• Ответы отправляются анонимно\n\n"
-            "Выберите действие:",
+            "📌 Используйте нижнее меню для управления обращениями.\n"
+            "Ответы отправляются пользователям напрямую.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup
+            reply_markup=get_admin_keyboard()
         )
         return
     
     # Пользовательское меню
     user_data = await get_user_data(user.id)
-    
     if not user_data:
         await update.message.reply_text(
             "❌ Похоже вы еще не зарегистрированы.\n"
@@ -188,138 +180,85 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['user_data'] = user_data
     
-    keyboard = [
-        [InlineKeyboardButton("📝 Создать обращение", callback_data='new_ticket')],
-        [InlineKeyboardButton("📊 Статус обращений", callback_data='my_tickets')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
         f"👋 Здравствуйте, {user_data.get('first_name', 'пользователь')}!\n\n"
-        "Это бот технической поддержки. Вы можете создать обращение, "
-        "и наш специалист свяжется с вами.\n\n"
-        "Пожалуйста, подробно опишите вашу проблему.",
-        reply_markup=reply_markup
+        "Это бот технической поддержки. Нажмите кнопку **«Создать обращение»** ниже, "
+        "чтобы задать свой вопрос.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_user_keyboard()
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = update.effective_user.id
     data = query.data
+    logger.info(f"Button pressed: {data}")
     
-    logger.info(f"Button pressed: {data} by user {user_id}")
-    
-    # Админские кнопки
     if data == 'admin_tickets':
         await show_admin_tickets(update, context)
-        return
     elif data == 'admin_stats':
         await show_admin_stats(update, context)
-        return
-    
-    # Пользовательские кнопки
-    if data == 'new_ticket':
-        context.user_data['state'] = SupportStates.WAITING_FOR_MESSAGE
-        await query.message.reply_text(
-            "📝 Пожалуйста, опишите вашу проблему подробно.\n"
-            "Вы можете отправить текст, фото, видео или документ.\n\n"
-            "❗ Для отмены отправьте /cancel"
-        )
-    elif data == 'my_tickets':
-        user_data = await get_user_data(user_id)
-        if not user_data:
-            await query.message.reply_text("❌ Пользователь не найден")
-            return
-            
-        async with db_pool.acquire() as conn:
-            tickets = await conn.fetch(
-                """
-                SELECT id, title, status, created_at
-                FROM support_tickets
-                WHERE user_id = $1
-                ORDER BY created_at DESC
-                LIMIT 10
-                """,
-                user_data['id']
-            )
-        
-        if tickets:
-            text = "📋 **Ваши обращения:**\n\n"
-            for ticket in tickets:
-                status_emoji = '✅' if ticket['status'] == 'closed' else '🔄'
-                text += f"{status_emoji} #{ticket['id']} - {ticket['title']}\n"
-                text += f"   📅 {ticket['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
-        else:
-            text = "📭 У вас нет обращений."
-        
-        await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def show_admin_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать все открытые тикеты"""
-    query = update.callback_query
+    """Отображение открытых тикетов с интерактивными кнопками управления"""
+    is_callback = update.callback_query is not None
+    msg_obj = update.callback_query.message if is_callback else update.message
     
     async with db_pool.acquire() as conn:
         tickets = await conn.fetch(
             """
-            SELECT 
-                t.id,
-                t.title,
-                t.message,
-                t.status,
-                t.created_at,
-                u.first_name,
-                u.username,
-                u.telegram_id
+            SELECT t.id, t.message, u.first_name, u.telegram_id
             FROM support_tickets t
             JOIN users u ON t.user_id = u.id
             WHERE t.status = 'open'
-            ORDER BY t.created_at DESC
-            LIMIT 20
+            ORDER BY t.created_at DESC LIMIT 10
             """
         )
     
     if not tickets:
-        await query.message.reply_text("📭 Нет открытых тикетов.")
+        text = "📭 Нет открытых тикетов."
+        keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data='admin_tickets')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if is_callback:
+            await msg_obj.edit_text(text, reply_markup=reply_markup)
+        else:
+            await msg_obj.reply_text(text, reply_markup=reply_markup)
         return
     
-    text = "📋 **Открытые тикеты:**\n\n"
-    for ticket in tickets:
-        text += f"#{ticket['id']} - {ticket['title']}\n"
-        text += f"👤 {ticket['first_name']} (@{ticket['username'] or 'нет'})\n"
-        text += f"📅 {ticket['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
-        text += f"📝 {ticket['message'][:100]}...\n\n"
+    text = "📋 **Список открытых обращений:**\n\n"
+    keyboard = []
     
-    # Добавляем кнопку для обновления
-    keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data='admin_tickets')]]
+    for ticket in tickets:
+        t_id = ticket['id']
+        u_id = ticket['telegram_id']
+        short_msg = ticket['message'][:30] + ('...' if len(ticket['message']) > 30 else '')
+        text += f"🔹 **#{t_id}** | {ticket['first_name']}: _{short_msg}_\n"
+        
+        # Добавляем ряд кнопок для каждого тикета прямо в кабинет
+        keyboard.append([
+            InlineKeyboardButton(f"✏️ Ответить #{t_id}", callback_data=f"reply_{u_id}_{t_id}"),
+            InlineKeyboardButton(f"❌ Закрыть #{t_id}", callback_data=f"close_{u_id}_{t_id}")
+        ])
+        
+    keyboard.append([InlineKeyboardButton("🔄 Обновить список", callback_data='admin_tickets')])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    if is_callback:
+        await msg_obj.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await msg_obj.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать статистику"""
-    query = update.callback_query
+    is_callback = update.callback_query is not None
+    msg_obj = update.callback_query.message if is_callback else update.message
     
     async with db_pool.acquire() as conn:
-        # Всего тикетов
         total = await conn.fetchval("SELECT COUNT(*) FROM support_tickets")
-        
-        # Открытых
         open_tickets = await conn.fetchval("SELECT COUNT(*) FROM support_tickets WHERE status = 'open'")
-        
-        # Закрытых за сегодня
         today = datetime.now(pytz.UTC).date()
         closed_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM support_tickets WHERE status = 'closed' AND DATE(closed_at) = $1",
-            today
-        )
-        
-        # За неделю
-        week_ago = today - datetime.timedelta(days=7)
-        closed_week = await conn.fetchval(
-            "SELECT COUNT(*) FROM support_tickets WHERE status = 'closed' AND DATE(closed_at) >= $1",
-            week_ago
+            "SELECT COUNT(*) FROM support_tickets WHERE status = 'closed' AND DATE(closed_at) = $1", today
         )
     
     text = (
@@ -327,136 +266,92 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📌 Всего обращений: {total}\n"
         f"🔄 Открытых: {open_tickets}\n"
         f"✅ Закрыто сегодня: {closed_today}\n"
-        f"✅ Закрыто за неделю: {closed_week}\n"
-        f"📅 Дата: {today.strftime('%d.%m.%Y')}"
     )
-    
     keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data='admin_stats')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    if is_callback:
+        await msg_obj.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await msg_obj.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
         return
     
-    # Проверяем, не в режиме ли ответа админ
+    text = update.message.text
+    
+    # Роутинг на основе текстовых Reply-кнопок
+    if text == "📝 Создать обращение":
+        context.user_data['state'] = SupportStates.WAITING_FOR_MESSAGE
+        await update.message.reply_text("📝 Опишите проблему. Можно прикрепить медиафайл.\nДля отмены: /cancel")
+        return
+    elif text == "📊 Мои обращения":
+        await show_user_tickets(update, context)
+        return
+    elif text == "📋 Открытые тикеты" and user.id in ADMIN_IDS:
+        await show_admin_tickets(update, context)
+        return
+    elif text == "📈 Статистика" and user.id in ADMIN_IDS:
+        await show_admin_stats(update, context)
+        return
+
+    # Проверка состояний админа
     if user.id in ADMIN_IDS:
         state = context.user_data.get('state')
         if state == SupportStates.WAITING_FOR_REPLY:
             await handle_admin_message(update, context)
             return
-        else:
-            await update.message.reply_text(
-                "ℹ️ Вы администратор.\n"
-                "• Для ответа нажмите '✏️ Ответить' под сообщением пользователя\n"
-                "• Для просмотра тикетов используйте /start"
-            )
-            return
-    
-    # Обработка сообщений от пользователей
+
+    # Проверка состояний пользователя
     state = context.user_data.get('state')
-    
     if state == SupportStates.WAITING_FOR_MESSAGE:
         await create_ticket(update, context)
     else:
-        await update.message.reply_text(
-            "ℹ️ Используйте кнопку «Создать обращение» для связи с поддержкой.\n"
-            "Или отправьте /start для главного меню."
+        # Дефолтный ответ
+        kb = get_admin_keyboard() if user.id in ADMIN_IDS else get_user_keyboard()
+        await update.message.reply_text("Используйте кнопки меню для управления:", reply_markup=kb)
+
+async def show_user_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = await get_user_data(user_id)
+    if not user_data:
+        return
+        
+    async with db_pool.acquire() as conn:
+        tickets = await conn.fetch(
+            "SELECT id, title, status, created_at FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5",
+            user_data['id']
         )
+    
+    if tickets:
+        text = "📋 **Ваши обращения:**\n\n"
+        for ticket in tickets:
+            status_emoji = '✅' if ticket['status'] == 'closed' else '🔄'
+            text += f"{status_emoji} #{ticket['id']} - {ticket['title']}\n📅 {ticket['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+    else:
+        text = "📭 У вас пока нет обращений."
+        
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     
-    if not user:
-        return
-    
     user_data = await get_user_data(user.id)
     if not user_data:
-        await message.reply_text("❌ Ошибка: пользователь не найден.")
         return
     
-    # Получаем текст сообщения
     message_text = message.text or message.caption or "Вложение"
     
-    # Генерируем уникальный ID тикета
-    ticket_id = f"ticket_{user.id}_{int(datetime.now().timestamp())}"
-    
-    # Сохраняем в Redis
-    message_data = {
-        'user_id': user.id,
-        'text': message_text,
-        'timestamp': datetime.now().isoformat(),
-        'has_media': bool(message.photo or message.video or message.document)
-    }
-    
-    await redis_client.setex(
-        f"pending_ticket:{ticket_id}",
-        3600,
-        json.dumps(message_data)
-    )
-    
-    user_info = await format_user_info(user_data)
-    
-    # Отправляем админам
-    for admin_id in ADMIN_IDS:
-        try:
-            # Создаем кнопки с правильным callback_data
-            keyboard = [
-                [
-                    InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_{user.id}_{ticket_id}"),
-                    InlineKeyboardButton("❌ Закрыть", callback_data=f"close_{user.id}_{ticket_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            admin_text = (
-                f"🔔 **НОВОЕ ОБРАЩЕНИЕ**\n\n"
-                f"{user_info}\n\n"
-                f"**Сообщение:**\n{message_text}"
-            )
-            
-            # Отправляем основное сообщение с кнопками
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-            
-            # Отправляем медиа отдельно
-            if message.photo:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=message.photo[-1].file_id,
-                    caption=f"📎 Вложение"
-                )
-            elif message.video:
-                await context.bot.send_video(
-                    chat_id=admin_id,
-                    video=message.video.file_id,
-                    caption=f"📎 Вложение"
-                )
-            elif message.document:
-                await context.bot.send_document(
-                    chat_id=admin_id,
-                    document=message.document.file_id,
-                    caption=f"📎 Вложение"
-                )
-                
-        except Exception as e:
-            logger.error(f"Error sending to admin {admin_id}: {e}")
-    
-    # Сохраняем в БД
+    # Пишем в БД сразу, чтобы получить реальный ID тикета
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute(
+            ticket_db_id = await conn.fetchval(
                 """
-                INSERT INTO support_tickets (
-                    user_id, title, message, status, created_at
-                ) VALUES ($1, $2, $3, 'open', NOW())
+                INSERT INTO support_tickets (user_id, title, message, status, created_at)
+                VALUES ($1, $2, $3, 'open', NOW()) RETURNING id
                 """,
                 user_data['id'],
                 message_text[:50] + ('...' if len(message_text) > 50 else ''),
@@ -464,145 +359,134 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         logger.error(f"Error saving ticket: {e}")
+        await message.reply_text("❌ Произошла ошибка базы данных. Попробуйте позже.")
+        return
+
+    # Кэшируем связку в Redis для поиска по callback_data (ограничение 64 байта)
+    # Формат ключа: r_ticket:<ticket_db_id> -> значение user_id
+    await redis_client.setex(f"r_ticket:{ticket_db_id}", 86400 * 7, str(user.id))
+    
+    user_info = await format_user_info(user_data)
+    
+    # Пересылаем админам с ID из базы данных
+    for admin_id in ADMIN_IDS:
+        try:
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_{user.id}_{ticket_db_id}"),
+                    InlineKeyboardButton("❌ Закрыть", callback_data=f"close_{user.id}_{ticket_db_id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            admin_text = (
+                f"🔔 **НОВОЕ ОБРАЩЕНИЕ #{ticket_db_id}**\n\n"
+                f"{user_info}\n\n"
+                f"**Сообщение:**\n{message_text}"
+            )
+            
+            await context.bot.send_message(
+                chat_id=admin_id, text=admin_text,
+                parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+            
+            # Пересылка медиа, если есть
+            if message.photo:
+                await context.bot.send_photo(chat_id=admin_id, photo=message.photo[-1].file_id, caption="📎 Вложение")
+            elif message.video:
+                await context.bot.send_video(chat_id=admin_id, video=message.video.file_id, caption="📎 Вложение")
+            elif message.document:
+                await context.bot.send_document(chat_id=admin_id, document=message.document.file_id, caption="📎 Вложение")
+                
+        except Exception as e:
+            logger.error(f"Error sending to admin {admin_id}: {e}")
     
     context.user_data['state'] = None
-    
-    await message.reply_text(
-        "✅ Ваше обращение отправлено в поддержку!\n"
-        "Мы ответим вам в ближайшее время."
-    )
+    await message.reply_text("✅ Ваше обращение отправлено в поддержку!")
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия кнопок админом"""
     query = update.callback_query
-    
-    try:
-        await query.answer()
-    except:
-        pass
+    await query.answer()
     
     data = query.data
-    logger.info(f"Admin action: {data}")
-    
-    # Разбираем callback_data
     parts = data.split('_')
-    
-    if len(parts) < 3:
-        await query.message.reply_text("❌ Ошибка: неверный формат данных")
-        return
     
     action = parts[0]
     user_id = int(parts[1])
-    ticket_id = parts[2]
+    ticket_id = parts[2] # Это ID тикета из БД
     
     if action == 'reply':
-        # Сохраняем данные для ответа
         context.user_data['reply_to_user'] = user_id
         context.user_data['reply_ticket_id'] = ticket_id
         context.user_data['state'] = SupportStates.WAITING_FOR_REPLY
         
         await query.message.reply_text(
-            f"✏️ Введите ваш ответ для пользователя.\n"
-            f"ID тикета: {ticket_id}\n\n"
-            f"Для отмены отправьте /cancel"
-        )
-        
-        # Редактируем сообщение, чтобы показать что ответ начат
-        await query.edit_message_text(
-            text=query.message.text + "\n\n⏳ **Ожидание ответа администратора...**",
-            parse_mode=ParseMode.MARKDOWN
+            f"✏️ Введите ваш ответ для пользователя.\nТикет: #{ticket_id}\n\nДля отмены: /cancel"
         )
         
     elif action == 'close':
-        # Закрываем тикет
-        await redis_client.delete(f"pending_ticket:{ticket_id}")
-        
-        # Обновляем статус в БД
         try:
             async with db_pool.acquire() as conn:
-                # Пытаемся найти ID тикета в БД
-                ticket_db_id = await conn.fetchval(
-                    "SELECT id FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
-                    user_id
+                await conn.execute(
+                    "UPDATE support_tickets SET status = 'closed', closed_at = NOW() WHERE id = $1",
+                    int(ticket_id)
                 )
+            
+            # Пытаемся отредактировать сообщение с тикетом, убирая кнопки
+            try:
+                await query.edit_message_text(
+                    text=query.message.text + "\n\n❌ **Тикет закрыт**",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
                 
-                if ticket_db_id:
-                    await conn.execute(
-                        """
-                        UPDATE support_tickets 
-                        SET status = 'closed', closed_at = NOW() 
-                        WHERE id = $1
-                        """,
-                        ticket_db_id
-                    )
-        except Exception as e:
-            logger.error(f"Error closing ticket: {e}")
-        
-        await query.message.reply_text("✅ Тикет закрыт.")
-        
-        # Уведомляем пользователя
-        try:
+            await query.message.reply_text(f"✅ Тикет #{ticket_id} закрыт.")
+            
+            # Оповещение юзера
             await context.bot.send_message(
                 chat_id=user_id,
-                text="ℹ️ Ваше обращение было закрыто администратором."
+                text=f"ℹ️ Ваше обращение #{ticket_id} было успешно закрыто поддержкой."
             )
         except Exception as e:
-            logger.error(f"Error notifying user: {e}")
+            logger.error(f"Error closing ticket {ticket_id}: {e}")
 
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщения от админа (ответ пользователю)"""
     user = update.effective_user
-    
     if not user or user.id not in ADMIN_IDS:
         return
-    
-    # Проверяем состояние
-    state = context.user_data.get('state')
-    if state != SupportStates.WAITING_FOR_REPLY:
-        await update.message.reply_text(
-            "ℹ️ Вы не в режиме ответа.\n"
-            "Нажмите '✏️ Ответить' под сообщением пользователя."
-        )
-        return
-    
+        
     reply_to_user = context.user_data.get('reply_to_user')
+    ticket_id = context.user_data.get('reply_ticket_id')
+    
     if not reply_to_user:
-        await update.message.reply_text("❌ Ошибка: пользователь не найден.")
+        await update.message.reply_text("❌ Ошибка: сессия ответа потеряна.")
         context.user_data['state'] = None
         return
-    
+        
     try:
-        # Отправляем ответ пользователю
         await context.bot.send_message(
             chat_id=reply_to_user,
-            text=f"📩 **Ответ поддержки:**\n\n{update.message.text}",
+            text=f"📩 **Ответ техподдержки по тикету #{ticket_id}:**\n\n{update.message.text}",
             parse_mode=ParseMode.MARKDOWN
         )
         
-        await update.message.reply_text(
-            f"✅ Ответ отправлен пользователю.\n"
-            f"ID пользователя: {reply_to_user}"
-        )
+        await update.message.reply_text(f"✅ Ответ по тикету #{ticket_id} отправлен.")
         
-        # Очищаем состояние
         context.user_data['state'] = None
         context.user_data['reply_to_user'] = None
         context.user_data['reply_ticket_id'] = None
-        
     except Exception as e:
-        logger.error(f"Error sending reply to user: {e}")
-        await update.message.reply_text(f"❌ Ошибка при отправке: {e}")
+        logger.error(f"Error replying to user: {e}")
+        await update.message.reply_text(f"❌ Ошибка отправки: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена текущего действия"""
     context.user_data['state'] = None
     context.user_data['reply_to_user'] = None
     context.user_data['reply_ticket_id'] = None
     
-    await update.message.reply_text(
-        "✅ Действие отменено.\n"
-        "Отправьте /start для главного меню."
-    )
+    kb = get_admin_keyboard() if update.effective_user.id in ADMIN_IDS else get_user_keyboard()
+    await update.message.reply_text("✅ Действие отменено.", reply_markup=kb)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
@@ -621,16 +505,7 @@ async def create_tables():
                 closed_at TIMESTAMP WITH TIME ZONE
             )
         """)
-        
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON support_tickets(user_id)
-        """)
-        
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status)
-        """)
-        
-        logger.info("Tables created/verified")
+        logger.info("Tables checked/created")
 
 def main():
     loop = asyncio.new_event_loop()
@@ -638,18 +513,16 @@ def main():
     
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Команды
+    # ⚠️ КРИТИЧНО: Первыми регистрируем точные паттерны для CallbackQuery
+    application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^reply_'))
+    application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^close_'))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern='^admin_'))
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     
-    # Обработчики
-    application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_message))
-    
-    # Обработчики админов (с приоритетом)
-    application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^reply_'))
-    application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^close_'))
+    application.add_handler(filters=filters.PHOTO | filters.VIDEO | filters.Document.ALL, handler=MessageHandler(handle_message))
     
     application.add_error_handler(error_handler)
     
@@ -662,7 +535,7 @@ def main():
         await application.start()
         await application.updater.start_polling()
         
-        logger.info(f"Support bot started! Admins: {ADMIN_IDS}")
+        logger.info(f"Support bot updated & live! Admins: {ADMIN_IDS}")
         
         try:
             await asyncio.Event().wait()
@@ -671,11 +544,9 @@ def main():
         finally:
             await application.updater.stop()
             await application.stop()
-            if db_pool:
-                await db_pool.close()
-            if redis_client:
-                await redis_client.close()
-    
+            if db_pool: await db_pool.close()
+            if redis_client: await redis_client.close()
+            
     try:
         loop.run_until_complete(init())
     except KeyboardInterrupt:
