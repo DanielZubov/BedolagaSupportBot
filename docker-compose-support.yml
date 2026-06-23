@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  support-bot:
+    build:
+      context: ./support-bot
+      dockerfile: Dockerfile
+    container_name: remnawave_support_bot
+    restart: unless-stopped
+    env_file:
+      - ./support-bot/.env
+    environment:
+      # Подключаемся к общей сети с Bedolaga
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: remnawave_bot
+      POSTGRES_USER: remnawave_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_123}
+      REDIS_URL: redis://redis:6379/1
+      TZ: Europe/Moscow
+    volumes:
+      - ./support-bot/logs:/app/logs:rw
+      - ./support-bot/data:/app/data:rw
+    networks:
+      - bot_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+networks:
+  bot_network:
+    external: true
+    name: remnawave_bot_bot_network  # Используем сеть от Bedolaga
