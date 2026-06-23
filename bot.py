@@ -144,13 +144,13 @@ def get_user_keyboard():
     keyboard = [
         [KeyboardButton("📝 Создать обращение"), KeyboardButton("📊 Мои обращения")]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 def get_admin_keyboard():
     keyboard = [
         [KeyboardButton("📋 Открытые тикеты"), KeyboardButton("📈 Статистика")]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
