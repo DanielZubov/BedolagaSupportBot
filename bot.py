@@ -522,7 +522,7 @@ def main():
     application.add_handler(CommandHandler("cancel", cancel))
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(filters=filters.PHOTO | filters.VIDEO | filters.Document.ALL, handler=MessageHandler(handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_message))
     
     application.add_error_handler(error_handler)
     
