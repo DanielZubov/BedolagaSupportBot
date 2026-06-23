@@ -1,4 +1,4 @@
-#🤖 Bedolaga Support Bot
+🤖 Bedolaga Support Bot
 Бот технической поддержки для сервиса Remnawave/Bedolaga с анонимной прослойкой между пользователями и администраторами.
 
 📋 Возможности
