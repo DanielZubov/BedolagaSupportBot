@@ -402,7 +402,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error sending to admin {admin_id}: {e}")
     
     context.user_data['state'] = None
-    await message.reply_text("✅ Ваше обращение отправлено в поддержку!")
+    await message.reply_text("✅ Ваше обращение приянто! Ожидайте ответа, мы скоро во всем разберемся")
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -446,7 +446,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Оповещение юзера
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"ℹ️ Ваше обращение #{ticket_id} было успешно закрыто поддержкой."
+                text=f"ℹ️ Ваше обращение #{ticket_id} было успешно закрыто."
             )
         except Exception as e:
             logger.error(f"Error closing ticket {ticket_id}: {e}")
