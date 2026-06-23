@@ -164,10 +164,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем админа
     if user.id in ADMIN_IDS:
         await update.message.reply_text(
-            f"👋 Здравствуйте, Администратор!\n\n"
-            "Я бот технической поддержки.\n"
+            f"👋 Привет, Админ!\n\n"
+            "Это бот технической поддержки.\n"
             "Все обращения пользователей будут приходить сюда.\n"
-            "Вы можете отвечать на них анонимно."
         )
         return
     
@@ -176,8 +175,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not user_data:
         await update.message.reply_text(
-            "❌ Вы не зарегистрированы в сервисе.\n"
-            "Пожалуйста, сначала зарегистрируйтесь в основном боте."
+            "❌ Похоже вы еще не зарегистрированы.\n"
+            "Пожалуйста, сначала зарегистрируйтесь в основном боте - @Leon_VPNbot"
         )
         return
     
