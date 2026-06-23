@@ -75,10 +75,9 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                     username,
                     first_name,
                     last_name,
-                    balance,
-                    referral_balance,
+                    balance_kopeks as balance,
                     created_at,
-                    language_code
+                    language
                 FROM users 
                 WHERE telegram_id = $1
                 """,
@@ -93,14 +92,12 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                 """
                 SELECT 
                     id,
-                    type,
                     status,
                     traffic_limit_gb,
                     used_traffic_gb,
                     device_limit,
                     expires_at,
-                    created_at,
-                    updated_at
+                    created_at
                 FROM subscriptions 
                 WHERE user_id = $1 AND status = 'active'
                 ORDER BY created_at DESC 
@@ -114,7 +111,7 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
             if subscription:
                 data['subscription'] = dict(subscription)
                 # Вычисляем процент использованного трафика
-                if subscription['traffic_limit_gb'] > 0:
+                if subscription['traffic_limit_gb'] and subscription['traffic_limit_gb'] > 0:
                     used_percent = (subscription['used_traffic_gb'] / subscription['traffic_limit_gb']) * 100
                     data['subscription']['used_percent'] = round(used_percent, 1)
                 else:
@@ -137,10 +134,9 @@ async def format_user_info(user_data: Dict) -> str:
     lines = [
         "📋 **ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ**",
         f"🆔 ID: `{user_data.get('telegram_id')}`",
-        f"👤 Имя: {user_data.get('first_name', 'Не указано')} {user_data.get('last_name', '')}",
+        f"👤 Имя: {user_data.get('first_name', 'Не указано')}",
         f"🔗 Username: @{user_data.get('username', 'Не указан')}",
         f"💳 Баланс: {user_data.get('balance', 0) / 100:.2f} ₽",
-        f"🎁 Реф. баланс: {user_data.get('referral_balance', 0) / 100:.2f} ₽",
         f"📅 Зарегистрирован: {user_data.get('created_at').strftime('%d.%m.%Y %H:%M') if user_data.get('created_at') else 'Неизвестно'}",
         "\n📦 **ПОДПИСКА:**"
     ]
@@ -165,13 +161,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
         
+    # Проверяем админа
+    if user.id in ADMIN_IDS:
+        await update.message.reply_text(
+            f"👋 Здравствуйте, Администратор!\n\n"
+            "Я бот технической поддержки.\n"
+            "Все обращения пользователей будут приходить сюда.\n"
+            "Вы можете отвечать на них анонимно."
+        )
+        return
+    
     # Проверяем, есть ли пользователь в БД
     user_data = await get_user_data(user.id)
     
     if not user_data:
         await update.message.reply_text(
             "❌ Вы не зарегистрированы в сервисе.\n"
-            "Пожалуйста, сначала обратитесь к основному боту: @Leon_VPNbot"
+            "Пожалуйста, сначала зарегистрируйтесь в основном боте."
         )
         return
     
@@ -180,8 +186,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📝 Создать обращение", callback_data='new_ticket')],
-        [InlineKeyboardButton("📊 Статус моих обращений", callback_data='my_tickets')],
-        [InlineKeyboardButton("❓ FAQ", callback_data='faq')],
+        [InlineKeyboardButton("📊 Статус обращений", callback_data='my_tickets')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -201,7 +206,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if query.data == 'new_ticket':
-        # Сохраняем состояние ожидания сообщения
         context.user_data['state'] = SupportStates.WAITING_FOR_MESSAGE
         await query.message.reply_text(
             "📝 Пожалуйста, опишите вашу проблему подробно.\n"
@@ -209,17 +213,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❗ Для отмены отправьте /cancel"
         )
     elif query.data == 'my_tickets':
-        # Получаем тикеты пользователя
+        # Получаем данные пользователя
+        user_data = await get_user_data(user_id)
+        if not user_data:
+            await query.message.reply_text("❌ Пользователь не найден")
+            return
+            
         async with db_pool.acquire() as conn:
             tickets = await conn.fetch(
                 """
                 SELECT id, title, status, created_at
                 FROM support_tickets
-                WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1)
+                WHERE user_id = $1
                 ORDER BY created_at DESC
                 LIMIT 10
                 """,
-                user_id
+                user_data['id']
             )
         
         if tickets:
@@ -232,18 +241,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "📭 У вас нет обращений."
         
         await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    elif query.data == 'faq':
-        await query.message.reply_text(
-            "❓ **Часто задаваемые вопросы:**\n\n"
-            "1️⃣ **Как подключиться к VPN?**\n"
-            "   Используйте бота @Leon_VPNbot для получения конфигурации.\n\n"
-            "2️⃣ **Проблемы с оплатой?**\n"
-            "   Обратитесь в поддержку, создав обращение.\n\n"
-            "3️⃣ **Скорость интернета упала?**\n"
-            "   Проверьте подключение, перезапустите VPN клиент.\n\n"
-            "Если ваш вопрос не решен, создайте обращение.",
-            parse_mode=ParseMode.MARKDOWN
-        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка сообщений от пользователей"""
@@ -251,13 +248,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
     
+    # Если это админ, не обрабатываем как пользователя
+    if user.id in ADMIN_IDS:
+        await update.message.reply_text(
+            "ℹ️ Вы администратор. Используйте кнопки под сообщениями пользователей для ответа."
+        )
+        return
+    
     state = context.user_data.get('state')
     
-    # Если пользователь в режиме создания обращения
     if state == SupportStates.WAITING_FOR_MESSAGE:
         await create_ticket(update, context)
     else:
-        # Если просто сообщение вне обращения
         await update.message.reply_text(
             "ℹ️ Используйте кнопку «Создать обращение» для связи с поддержкой.\n"
             "Или отправьте /start для главного меню."
@@ -277,7 +279,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Ошибка: пользователь не найден.")
         return
     
-    # Сохраняем сообщение в Redis как черновик
+    # Сохраняем в Redis
     ticket_id = f"ticket_{user.id}_{datetime.now().timestamp()}"
     
     message_data = {
@@ -289,7 +291,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await redis_client.setex(
         f"pending_ticket:{ticket_id}",
-        3600,  # 1 час
+        3600,
         json.dumps(message_data)
     )
     
@@ -299,7 +301,6 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отправка админам
     for admin_id in ADMIN_IDS:
         try:
-            # Создаем кнопки для ответа
             keyboard = [
                 [
                     InlineKeyboardButton("✏️ Ответить", callback_data=f'reply_{user.id}_{ticket_id}'),
@@ -321,24 +322,24 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             
-            # Если есть медиа, пересылаем его
+            # Если есть медиа, пересылаем
             if message.photo:
                 await context.bot.send_photo(
                     chat_id=admin_id,
                     photo=message.photo[-1].file_id,
-                    caption=f"Вложение к обращению #{ticket_id[:8]}"
+                    caption=f"Вложение к обращению"
                 )
             elif message.video:
                 await context.bot.send_video(
                     chat_id=admin_id,
                     video=message.video.file_id,
-                    caption=f"Вложение к обращению #{ticket_id[:8]}"
+                    caption=f"Вложение к обращению"
                 )
             elif message.document:
                 await context.bot.send_document(
                     chat_id=admin_id,
                     document=message.document.file_id,
-                    caption=f"Вложение к обращению #{ticket_id[:8]}"
+                    caption=f"Вложение к обращению"
                 )
                 
         except Exception as e:
@@ -354,16 +355,14 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ) VALUES ($1, $2, $3, 'open', NOW())
                 """,
                 user_data['id'],
-                message.text[:50] if message.text else 'Обращение с вложением',
+                (message.text[:50] + '...') if message.text and len(message.text) > 50 else (message.text or 'Вложение'),
                 message.text or 'Вложение'
             )
     except Exception as e:
         logger.error(f"Error saving ticket: {e}")
     
-    # Очищаем состояние
     context.user_data['state'] = None
     
-    # Подтверждаем пользователю
     await message.reply_text(
         "✅ Ваше обращение отправлено в поддержку!\n"
         "Мы ответим вам в ближайшее время."
@@ -385,7 +384,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ticket_id = parts[2]
     
     if action == 'reply':
-        # Сохраняем в контексте данные для ответа
         context.user_data['reply_to_user'] = user_id
         context.user_data['reply_ticket'] = ticket_id
         context.user_data['state'] = SupportStates.WAITING_FOR_REPLY
@@ -396,11 +394,9 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     
     elif action == 'close':
-        # Закрываем тикет
         await redis_client.delete(f"pending_ticket:{ticket_id}")
         await query.message.reply_text("✅ Тикет закрыт.")
         
-        # Уведомляем пользователя
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -410,7 +406,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.error(f"Error notifying user: {e}")
 
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений от админов в ответ пользователю"""
+    """Обработка сообщений от админов"""
     user = update.effective_user
     if not user or user.id not in ADMIN_IDS:
         return
@@ -425,7 +421,6 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Ошибка: пользователь не найден.")
         return
     
-    # Отправляем ответ пользователю
     try:
         await context.bot.send_message(
             chat_id=reply_to_user,
@@ -435,7 +430,6 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await update.message.reply_text("✅ Ответ отправлен пользователю.")
         
-        # Очищаем состояние
         context.user_data['state'] = None
         context.user_data['reply_to_user'] = None
         context.user_data['reply_ticket'] = None
@@ -465,16 +459,17 @@ async def create_tables():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS support_tickets (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 message TEXT,
                 status VARCHAR(20) DEFAULT 'open',
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW(),
-                closed_at TIMESTAMP
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                closed_at TIMESTAMP WITH TIME ZONE
             )
         """)
         
+        # Создаем индексы для производительности
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON support_tickets(user_id)
         """)
@@ -487,11 +482,9 @@ async def create_tables():
 
 def main():
     """Основная функция"""
-    # Инициализация
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Команды
@@ -501,6 +494,7 @@ def main():
     # Обработчики для пользователей
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_message))
     
     # Обработчики для админов
     application.add_handler(CallbackQueryHandler(handle_admin_reply, pattern='^reply_'))
@@ -510,23 +504,19 @@ def main():
         handle_admin_message
     ))
     
-    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
-    # Инициализация БД и Redis
     async def init():
         await init_db()
         await init_redis()
         await create_tables()
         
-        # Запуск бота
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
         
         logger.info("Support bot started!")
         
-        # Ожидаем остановки
         try:
             await asyncio.Event().wait()
         except KeyboardInterrupt:
