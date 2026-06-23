@@ -94,7 +94,7 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                     id,
                     status,
                     traffic_limit_gb,
-                    used_traffic_gb,
+                    traffic_used_gb,
                     device_limit,
                     expires_at,
                     created_at
@@ -112,7 +112,7 @@ async def get_user_data(telegram_id: int) -> Optional[Dict]:
                 data['subscription'] = dict(subscription)
                 # Вычисляем процент использованного трафика
                 if subscription['traffic_limit_gb'] and subscription['traffic_limit_gb'] > 0:
-                    used_percent = (subscription['used_traffic_gb'] / subscription['traffic_limit_gb']) * 100
+                    used_percent = (subscription['traffic_used_gb'] / subscription['traffic_limit_gb']) * 100
                     data['subscription']['used_percent'] = round(used_percent, 1)
                 else:
                     data['subscription']['used_percent'] = 0
@@ -144,7 +144,7 @@ async def format_user_info(user_data: Dict) -> str:
     sub = user_data.get('subscription')
     if sub:
         lines.append(f"📊 Статус: {'✅ Активна' if sub.get('status') == 'active' else '❌ Неактивна'}")
-        lines.append(f"📶 Трафик: {sub.get('used_traffic_gb', 0):.1f} / {sub.get('traffic_limit_gb', 0):.1f} ГБ ({sub.get('used_percent', 0):.1f}%)")
+        lines.append(f"📶 Трафик: {sub.get('traffic_used_gb', 0):.1f} / {sub.get('traffic_limit_gb', 0):.1f} ГБ ({sub.get('used_percent', 0):.1f}%)")
         lines.append(f"📱 Устройств: {sub.get('device_limit', 0)}")
         if sub.get('expires_at'):
             days = sub.get('days_left', 0)
