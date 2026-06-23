@@ -1,7 +1,7 @@
 services:
   support-bot:
     build: .
-    container_name: remnawave_support_bot
+    container_name: bedolaga_support_bot
     restart: unless-stopped
     env_file:
       - .env
