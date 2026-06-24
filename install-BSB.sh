@@ -7,9 +7,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# НАСТРОЙКИ РЕПОЗИТОРИЯ (Укажи свой URL)
+# НАСТРОЙКИ РЕПОЗИТОРИЯ (Строго в /opt)
 REPO_URL="https://github.com/DanielZubov/BedolagaSupportBot.git"
-REPO_DIR="BedolagaSupportBot"
+REPO_DIR="/opt/BedolagaSupportBot"
 CONTAINER_NAME="bedolaga_support_bot"
 
 draw_header() {
@@ -20,6 +20,11 @@ draw_header() {
 }
 
 check_dependencies() {
+    # Проверка на root-права, так как пишем в /opt
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}❌ Ошибка: Этот скрипт должен быть запущен от имени root (через sudo).${NC}"
+        exit 1
+    fi
     if ! command -v docker &> /dev/null; then
         echo -e "${RED}❌ Docker не установлен! Установите его перед запуском.${NC}"
         exit 1
@@ -30,21 +35,16 @@ check_dependencies() {
     fi
 }
 
-# Функция перехода в корень репозитория
+# Функция перехода в корень репозитория по абсолютному пути
 ensure_repo_dir() {
-    # Если мы уже внутри папки репозитория (есть .git)
-    if [ -d ".git" ]; then
-        return
-    fi
-
-    # Если мы снаружи, но папка уже создана — заходим в неё
-    if [ -d "$REPO_DIR" ]; then
+    # Если директория уже существует и там есть репозиторий
+    if [ -d "$REPO_DIR/.git" ]; then
         cd "$REPO_DIR" || exit 1
         return
     fi
 
-    # Если папки нет, значит это первая установка — клонируем
-    echo -e "${YELLOW}📥 Клонирование репозитория...${NC}"
+    # Если папки нет вообще — клонируем строго в /opt/BedolagaSupportBot
+    echo -e "${YELLOW}📥 Клонирование репозитория в $REPO_DIR...${NC}"
     git clone "$REPO_URL" "$REPO_DIR"
     cd "$REPO_DIR" || exit 1
 }
@@ -54,7 +54,6 @@ install_bot() {
     draw_header
     echo -e "${YELLOW}🚀 Настройка окружения и установка...${NC}\n"
 
-    # Проверяем и клонируем репозиторий, если нужно
     ensure_repo_dir
 
     if [ -f .env ]; then
@@ -116,7 +115,6 @@ update_bot() {
     ensure_repo_dir
     echo -e "${YELLOW}🔄 Проверка обновлений в Git...${NC}"
     
-    # Стягиваем изменения
     git pull
     
     echo -e "${YELLOW}📥 Пересборка контейнеров после обновления...${NC}"
@@ -136,8 +134,8 @@ show_logs() {
 # 5. Полное удаление
 uninstall_bot() {
     draw_header
-    if [ -d ".git" ] || [ -d "$REPO_DIR" ]; then
-        ensure_repo_dir
+    if [ -d "$REPO_DIR" ]; then
+        cd "$REPO_DIR" || exit 1
         echo -e "${RED}⚠️⚠️⚠️ ВНИМАНИЕ! Полное удаление уничтожит контейнеры, базу данных и папку с ботом!${NC}"
         read -p "Вы уверены, что хотите удалить ВСЁ? (укажите 'yes' для подтверждения): " confirm
         
@@ -145,15 +143,15 @@ uninstall_bot() {
             echo -e "${YELLOW}🗑️ Останавливаем контейнеры и удаляем Volumes...${NC}"
             docker compose down -v
             
-            cd ..
-            echo -e "${YELLOW}🗑️ Удаляем директорию проекта ${REPO_DIR}...${NC}"
+            cd /opt || exit 1
+            echo -e "${YELLOW}🗑️ Удаляем директорию проекта $REPO_DIR...${NC}"
             rm -rf "$REPO_DIR"
             echo -e "${GREEN}✅ Бот и все его данные полностью удалены!${NC}"
         else
             echo -e "${GREEN}❌ Удаление отменено.${NC}"
         fi
     else
-        echo -e "${YELLOW}ℹ️ Бот еще не установлен, удалять нечего.${NC}"
+        echo -e "${YELLOW}ℹ️ Директория $REPO_DIR не найдена, удалять нечего.${NC}"
     fi
     read -p "Нажмите Enter для возврата в меню..."
 }
@@ -163,7 +161,7 @@ check_dependencies
 
 while true; do
     draw_header
-    echo -e "1. ${GREEN}🚀 Устаносить BedolagaSupportBot${NC}"
+    echo -e "1. ${GREEN}🚀 Установить BedolagaSupportBot${NC}"
     echo -e "2. ${YELLOW}🔄 Перезапустить бот${NC}"
     echo -e "3. ${BLUE}📥 Обновить бот${NC}"
     echo -e "4. ${NC}📋 Посмотреть логи${NC}"
